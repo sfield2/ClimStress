@@ -1,0 +1,596 @@
+---
+title: "Github"
+format: html
+editor: visual
+---
+
+## Getting Set Up
+
+Import necessary packages and set up working directory.
+
+```{r}
+#| echo: false
+
+packages <-c('terra','raster','dplyr','ggplot2','zoo','ggpubr','tidyr','dplyr',
+             'magrittr','ggridges','parameters','sf','tidyterra','tidyverse',
+             'ggtext','glue','patchwork','ggallin','ggpubr','ggdist','showtext',
+             'tseries','lmtest','BBmisc','PerformanceAnalytics','ggh4x')
+
+
+for(p in packages) if(p %in% rownames(installed.packages()) == F) { install.packages(p) }
+for(p in packages) suppressPackageStartupMessages(library(p,quietly=T,character.only=T))
+
+theme_set(theme_bw())
+```
+
+## Step #1
+
+Establish custom functions for easier separation of distributed data into top and bottom percentiles.
+
+```{r}
+#| echo: false
+
+top_ten <- function(data){
+  if(length(data)<5){
+    max <- NA
+  }else{
+    max <- quantile(data, probs=0.9, na.rm=TRUE)
+  }
+  return(max)
+}
+
+bottom_ten <- function(data){
+  if(length(data)<5){
+    min <- NA
+  }else{
+    min <- quantile(data, probs=0.1, na.rm=TRUE)
+  }
+  return(min)
+}
+
+stand <-  function(data){
+  (data-min(data))/(max(data)-min(data))
+}
+```
+
+## Step #2
+
+Summarize precipitation availability and precipitation variability from paleoclimate reconstruction:
+
+1.  Read in **example data**.
+
+2.  Buffer **example sites**.
+
+3.  Execute **loop** that:
+
+    1.  clips paleoclimate raster,
+
+    2.  places smoothing window over each year,
+
+    3.  calculates difference in smoothed windows across time,
+
+    4.  calculates changes (precipitation variability) and precipitation availability each year as a mean value,
+
+    5.  transforms output into a data frame
+
+```{r}
+#| echo: false
+
+### 1. Read in example data
+example <- st_read("<INSERTYOURDIRECTORY>/example_sites.shp")%>%
+  st_transform(.,crs=4269)
+
+ppt<-rast("<INSERTYOURDIRECTORY>/example_paleoclimate.tif")
+
+
+### 2. Buffer examples sites 
+example_buffs <- st_buffer(example,3000) # 0.27 dd equates to 3 km
+
+### 3: Execute loop
+for(i in 1:nrow(example_buffs)){
+  
+  ### get first site
+  site<-example_buffs[i,]
+  select_site_name <- site$UNIQU
+  
+  #### clip rasters
+  ppt_select <- crop(ppt, ext(site) + .01)
+ 
+  ppt_sp_var <- sapp(ppt_select, fun = function(x, ...) {focal(x, fun = "mean", w = 3,na.rm=T)})
+  
+
+  ppt_var <- (subset(ppt_sp_var, 1:(nlyr(ppt_sp_var)-1)) - subset(ppt_sp_var, 2:nlyr(ppt_sp_var))) * -1
+
+  #### summarize (mean) for all cells each year
+  ppt_mean <- global(ppt_select,mean,na.rm=T)%>%
+    mutate(Year=1:2000)%>%
+    select(Year,everything())%>%
+    set_rownames(1:2000)%>%
+    set_colnames(c("Year","Mean_precip"))
+  
+  ppt_var_mean <- global(ppt_var,mean,na.rm=T)%>%
+    mutate(Year=2:2000)%>%
+    select(Year,everything())%>%
+    set_rownames(2:2000)%>%
+    set_colnames(c("Year","Mean_precip_variab"))
+  
+  ### combine data for mean of cells and all years
+  df_summary_conditions <- merge(ppt_mean,ppt_var_mean,by="Year")%>%
+    mutate(site_name = select_site_name)%>%
+    select(Year,site_name,everything())
+  
+  if (i == 1) {
+    final_summary_conditions <- df_summary_conditions
+  }else{
+    final_summary_conditions <- bind_rows(final_summary_conditions,df_summary_conditions)
+  } 
+}
+```
+
+## Step #2.1
+
+Build supplemental figure demonstrating computation of Step #2:
+
+```{r}
+#| echo: false
+
+### Year 1
+ggplot(ppt_select[[1]],aes(x=x,y=y))+
+  geom_raster(aes(fill=example_paleoclimate_1))+
+  geom_text(aes(label=round(example_paleoclimate_1)),col="white")+
+  scale_fill_viridis_c(direction= -1)+
+  labs(title="Year 1")+
+  theme(legend.position = "none")
+
+ggplot(ppt_sp_var[[1]],aes(x=x,y=y))+
+  geom_raster(aes(fill=focal_mean))+
+  geom_text(aes(label=round(focal_mean)),col="white")+
+  scale_fill_viridis_c(direction= -1)+
+  labs(title="Year 1 smoothed")+
+  theme(legend.position = "none")
+
+### Year 2
+ggplot(ppt_select[[2]],aes(x=x,y=y))+
+  geom_raster(aes(fill=example_paleoclimate_2))+
+  geom_text(aes(label=round(example_paleoclimate_2)),col="white")+
+  scale_fill_viridis_c(direction= -1)+
+  labs(title="Year 2")+
+  theme(legend.position = "none")
+
+ggplot(ppt_sp_var[[2]],aes(x=x,y=y))+
+  geom_raster(aes(fill=focal_mean))+
+  geom_text(aes(label=round(focal_mean)),col="white")+
+  scale_fill_viridis_c(direction= -1)+
+  labs(title="Year 2 smoothed")+
+  theme(legend.position = "none")
+
+### Differences
+ggplot(ppt_var[[1]],aes(x=x,y=y))+
+  geom_raster(aes(fill=focal_mean))+
+  geom_text(aes(label=round(focal_mean)),col="white")+
+  scale_fill_viridis_c(direction= -1)+ 
+  labs(title="Difference between Year 2 & 1 smoothed")+
+  theme(legend.position = "none")
+
+```
+
+## Step #3
+
+Produce regional summaries of precipitation availability and precipitation variability:
+
+1.  Import regional settlement change summaries
+2.  Import estimations of precipitation availability and precipitation variability
+3.  Seriate paleoclimate reconstructions into settlement change groups
+
+```{r}
+#| echo: false
+
+### 1. Import regional settlement change summaries 
+df_summary <- read.csv("<INSERTYOURDIRECTORY>/Summary_settlement_climate.csv",header=T,fileEncoding = 'UTF-8-BOM')
+
+region_labels <- unique(df_summary$region)
+
+### 2. Import estimations of precipitation availability and precipitation variability
+
+total_sum<- read.csv("<INSERTYOURDIRECTORY>/all_regions.csv",header=T,fileEncoding = 'UTF-8-BOM')
+
+
+### 3. Seriate paleocliamte reconstructions into settlement change groups
+for (j in 1:nrow(df_summary)){
+  start_year <- df_summary[j,c("transition_begins")]
+  end_year <- df_summary[j,c("transition_ends")]
+  type <- df_summary[j,c("transition_type")]
+  region_sub <- df_summary[j,c("region")]
+
+  if(type == "population decrease"){
+    if(j==1){
+      year_range <- (start_year-5):end_year
+      years <- as.data.frame(year_range)%>%
+        mutate(transition_type = type)%>%
+        mutate(region=region_sub)%>%
+        set_colnames(c("year","transition_type","region"))
+    }else {
+      year_range_new <- (start_year-5):end_year
+      years_new <- as.data.frame(year_range_new)%>%
+        mutate(transition_type = type)%>%
+        mutate(region=region_sub)%>%
+        set_colnames(c("year","transition_type","region"))
+
+      years<-rbind(years,years_new)
+    }
+  }else{
+    if(j==1){
+      year_range <- start_year:(end_year-5)
+      years <- as.data.frame(year_range)%>%
+        mutate(transition_type = type)%>%
+        mutate(region=region_sub)%>%
+        set_colnames(c("year","transition_type","region"))
+    }else {
+      year_range_new <- start_year:(end_year-5)
+      years_new <- as.data.frame(year_range_new)%>%
+        mutate(transition_type = type)%>%
+        mutate(region=region_sub)%>%
+        set_colnames(c("year","transition_type","region"))
+
+      years<-rbind(years,years_new)
+    }
+  }
+}
+
+rm(years_new)
+```
+
+## Step #3.1
+
+Build summary tables (Table 1 of publication) that shows precipitation variability and precipitation availability by region and across study area.
+
+Check against Table 1.
+
+**\*NOTE: Values are calculated in mm but reported in cm in publication.**
+
+```{r}
+#| echo: false
+
+years_summary <- merge(total_sum,years,by=c("year","region"))%>%
+  subset(year < 2000)%>%
+  mutate(mean_precip_v1 = abs(mean_precip_v1))%>%
+  mutate(transition_type_num = ifelse(transition_type == "population increase",0.275,0.225))%>%
+  select(c("year","region","transition_type","mean_precip","mean_precip_v1","transition_type_num"))
+
+regions_summarized <- years_summary%>%
+  group_by(transition_type,region)%>%
+  reframe(outlying_precip_var = top_ten(mean_precip_v1),
+          outlying_precip = bottom_ten(mean_precip),
+          mean_precip_var = mean(mean_precip_v1),
+          mean_precip = mean(mean_precip))
+
+all_summarized <- years_summary%>%
+  group_by(transition_type)%>%
+  reframe(outlying_precip_var = top_ten(mean_precip_v1),
+          outlying_precip = bottom_ten(mean_precip),
+          mean_precip_var = mean(mean_precip_v1),
+          mean_precip = mean(mean_precip))
+
+
+print(paste0("Annual Precipitation during Chaco Occupation is ", round(regions_summarized[5,6]/10,2)," cm",sep=""))
+
+print(paste0("Extreme aridity during Zuni Resettlement is ", round(regions_summarized[4,5]/10,2)," cm",sep=""))
+
+print(paste0("Outlying Variability during Mesa Verde Resettlement is ", round(regions_summarized[2,3]/10,2)," cm",sep=""))
+```
+
+## Step #4
+
+Conduct Kolmogrov-Smirnov Tests to see if values above 90th percentile during resettlement are considerably larger than values above the 90th percentile during occupation/growth
+
+```{r}
+#| echo: false
+
+all_in <- as.numeric(all_summarized$outlying_precip_var[which(all_summarized$transition_type=="population increase")])
+all_de <- as.numeric(all_summarized$outlying_precip_var[which(all_summarized$transition_type=="population decrease")])
+
+occ <- subset(years_summary,transition_type=="population increase")%>%
+  subset(.,mean_precip_v1>=all_in)
+
+de <- subset(years_summary,transition_type=="population decrease")%>%
+  subset(.,mean_precip_v1>=all_de)
+
+ks.test(occ$mean_precip_v1,de$mean_precip_v1)
+```
+
+## Step #5
+
+Conduct Permutation Test to see if values above 90th during resettlement are considerably larger than values above 90th percentile during occupation/growth
+
+```{r}
+iterations <- 100
+
+for(i in 1){
+
+    permutation <- as.data.frame(matrix(NA,iterations,4))%>%
+      set_colnames(c("iteration","test_statistic","region","original_test_statistic"))
+
+    ### regions summarised
+    occupation_sub <- subset(regions_summarized,transition_type=="population increase")
+
+    disoccupation_sub <- subset(regions_summarized,transition_type=="population decrease")
+
+    in_val <-as.numeric(occupation_sub$outlying_precip_var)
+    de_val <-as.numeric(disoccupation_sub$outlying_precip_var)
+
+    ### subset region by region name and divide into population types
+    years_summary_sub<- years_summary%>%
+      mutate(id=1:nrow(.))
+
+    summary_occupation <- subset(years_summary_sub,transition_type=="population increase")
+    summary_disoccupation <- subset(years_summary_sub,transition_type=="population decrease")
+
+    increase_years <- subset(summary_occupation,transition_type == "population increase")%>%
+      subset(.,mean_precip_v1>=in_val)
+    decrease_years <- subset(summary_disoccupation,transition_type == "population decrease")%>%
+      subset(.,mean_precip_v1>=de_val)
+
+    ### get min max in increase for normalization
+    min_in <- min(increase_years$mean_precip_v1)
+    max_in <- max(increase_years$mean_precip_v1)
+
+    ### get min max in decrease for normalization
+    min_de <- min(decrease_years$mean_precip_v1)
+    max_de <- max(decrease_years$mean_precip_v1)
+
+    ### normalize groups
+    increase_years<-increase_years%>%
+      mutate(pvm_scale = ((mean_precip_v1 - min_in)/(max_in-min_in)))
+
+    decrease_years<-decrease_years%>%
+      mutate(pvm_scale = ((mean_precip_v1 - min_de)/(max_de-min_de)))
+
+    ### find original value and assign to dataframe (as well as region label)
+    t <- ks.test(increase_years$mean_precip_v1,decrease_years$mean_precip_v1)
+    origin <- as.numeric(t[1])
+
+    permutation <- permutation%>%
+      mutate(region = "all")%>%
+      mutate(original_test_statistic = origin)
+
+    ### find values to make permutation proportional
+    total_obs <- nrow(increase_years)+nrow(decrease_years)
+    increase_per <- round(nrow(increase_years)/2)/total_obs
+
+    increase_num <- round(nrow(increase_years)*increase_per)
+    decrease_num <- nrow(decrease_years) - increase_num
+
+
+
+    for(j in 1:iterations){
+      ### permutate data (make sure permutation results in same sized groups after permutating)
+
+      increase_1 <- sample_n(increase_years,decrease_num)
+      increase_2 <- subset(increase_years, !(id %in% increase_1$id))
+
+      decrease_1 <- sample_n(decrease_years,increase_num)
+      decrease_2 <- subset(decrease_years, !(id %in% decrease_1$id))
+
+      increase_years_permutated <- rbind(increase_2,decrease_2)
+
+      decrease_years_permutated <- rbind(increase_1,decrease_1)
+
+      #combine and unnormalize first combined data
+      #un-normalize by ((x * (max-min))+min)
+      increase_years_permutated <- rbind(increase_2,decrease_2)%>%
+        mutate(pvm_unscale = ((pvm_scale*(max_in - min_in)) + min_in))
+
+      decrease_years_permutated <- rbind(increase_1,decrease_1)%>%
+        mutate(pvm_unscale = ((pvm_scale*(max_in - min_in)) + min_in))
+
+
+      # recalculate statistic
+      t <- ks.test(increase_years_permutated$pvm_unscale,decrease_years_permutated$pvm_unscale)
+      #t <- ks.test(increase_years_permutated$mean_precip_v1,decrease_years_permutated$mean_precip_v1)
+
+      permutation[j,c("iteration")] <- j
+      permutation[j,c("test_statistic")]<-  as.numeric(t[1])
+
+    }
+}
+
+permutation_summary <- permutation%>%
+  mutate(permutation_sig = ifelse(test_statistic > original_test_statistic,1,0))%>%
+  summarise(total_number_sig=sum(permutation_sig),
+            original_test_statistic=mean(original_test_statistic))%>%
+  mutate(permutations = iterations)%>%
+  mutate(permutation_p = total_number_sig/permutations)
+
+
+
+ggplot()+
+  geom_density(data=permutation,aes(test_statistic))+
+  geom_vline(data=permutation_summary,aes(xintercept=original_test_statistic),col="red")+
+  labs(title="Distribution of KS Stats across Permutation",
+       subtitle="Red Line indicates original KS Test",
+       caption = "Percentage of KS Stats across Permutation that are greater than Red Line is Permutation P-Value",
+       x="KS Statistic",
+       y= "Density")
+
+```
+
+## Step #6
+
+Read in aggregated data
+
+**\*NOTE: Due to sensitive site data, only aggregated data is available for replication.**
+
+```{r}
+#| echo: false
+
+outlying_variability<- read.csv("<INSERTYOURDIRECTORY>/aggregated_outlyingvariability.csv",header=T,fileEncoding = 'UTF-8-BOM')
+
+extreme_aridity<- read.csv("<INSERTYOURDIRECTORY>/aggregated_extremearidity.csv",header=T,fileEncoding = 'UTF-8-BOM')
+
+
+ggplot(data=outlying_variability)+
+  geom_line(aes(years_before_abandonment,count),color="#1b4332")+
+  scale_x_continuous(limits = c(1,400),breaks=seq(0,400,100))+
+  scale_y_continuous(limits=c(1,15000),breaks=seq(0,15000,5000))+
+  labs(x="Years before Resettlement",
+       y="Number of Settlements",
+       title="Number of Records for each Year Before Resettlement")+
+  theme_minimal()
+
+```
+
+## Step #6.2
+
+Run correlations on years before resettlement and extreme aridity.
+
+1.  Run spearman correlation
+
+2.  Visualize
+
+```{r}
+#| echo: false
+
+cor.test(extreme_aridity$years_before_abandonment,extreme_aridity$extreme_aridity,method="spearman")
+
+ggplot(data=extreme_aridity)+
+  geom_point(aes(years_before_abandonment,(extreme_aridity/10)),color="#8AB17D")+
+  geom_smooth(aes(years_before_abandonment,(extreme_aridity/10)),method="lm",se=F,linewidth=0.75,color="#1b4332")+
+  scale_y_continuous(limits = c(0,45),breaks=seq(0,40,10))+
+  labs(x="Years before Resettlement",
+       y="Annual Precipitation (cm)",
+       title="Extreme Aridity")+
+  theme_minimal()
+```
+
+## Step #6.3
+
+Run correlations on years before resettlement and outlying variability.
+
+1.  Run spearman correlation
+
+2.  Visualize
+
+```{r}
+#| echo: false
+
+cor.test(outlying_variability$years_before_abandonment,outlying_variability$outlying_variability,method="spearman")
+
+ggplot(data=outlying_variability)+
+  geom_point(aes(years_before_abandonment,(outlying_variability/10)),color="#8AB17D")+
+  geom_smooth(aes(years_before_abandonment,(outlying_variability/10)),method="lm",se=F,linewidth=0.75,color="#1b4332")+
+  scale_y_continuous(limits = c(0,45),breaks=seq(0,40,10))+
+  labs(x="Years before Resettlement",
+       y="Annual Precipitation (cm)",
+       title="Outlying Variability")+
+  theme_minimal()
+```
+
+```{r}
+#| echo: false
+
+### Import data
+
+corr_extreme_aridity<- read.csv("<INSERTYOURDIRECTORY>/results_extreme_aridity.csv",header=T,fileEncoding = 'UTF-8-BOM')
+
+corr_outlying_variability<- read.csv("<INSERTYOURDIRECTORY>/results_outlying_variability.csv",header=T,fileEncoding = 'UTF-8-BOM')
+
+
+
+### Order factors for better plotting
+corr_outlying_variability$lag_bins <- factor(corr_outlying_variability$lag_bins,levels=c("1-5 years", "6-10 years","11-15 years","16-20 years","21-25 years"))
+
+corr_outlying_variability$lag <- factor(corr_outlying_variability$lag,levels=c("v1","v2","v3","v4","v5","v6","v7","v8","v9","v10","v11","v12","v13","v14","v15","v16","v17","v18","v19","v20","v21","v22","v23","v24","v25"))
+
+
+
+
+ggplot()+
+    geom_line(data=corr_outlying_variability,aes(quant_cutoff,cor_r,group=lag,col=lag),alpha=0.5)+
+  geom_line(data=corr_extreme_aridity,aes(quant_cutoff_inverse.x,outlying_precip_inverse,group=1),col="black")+
+  geom_point(data=corr_extreme_aridity,aes(quant_cutoff_inverse.x,outlying_precip_inverse),col="black",alpha=0.5)+
+  geom_point(data=corr_outlying_variability,aes(quant_cutoff,cor_r,col=lag),alpha=0.5)+
+  scale_color_manual(name="Variability over n Years", values=c("#264653","#27515B","#275C62","#287271","#298880","#2A9388",
+                              "#2A9D8F","#42A28B","#5AA786","#8AB17D","#BABB74","#D2C06F",
+                              "#E9C46A","#EBC069","#ECBC68","#E9C46A","#F2AB64","#F3A763",
+                              "#E9C46A","#F39C5F","#F1965D","#EE8959","#EB7C55","#E97653",
+                              "#E76F51"),labels =c("1","2","3","4","5",
+                                                   "6","7","8","9","10",
+                                                   "11","12","13","14","15",
+                                                   "16","17","18","19","20",
+                                                   "21","22","23","24","25"))+
+  scale_x_continuous(limits=c(60,100),breaks=seq(60,100,10))+
+  scale_y_continuous(limits=c(-0.57,0),breaks=seq(-0.5,0,0.25))+
+  labs(title="Variability measured by changes between each year and n year(s) previous",
+      x="Percentile",
+      y="Correlation Coefficient",
+      subtitle="Correlations between extreme aridity and resettlement (black dots and line) have been inverted for comparative purposes",
+      caption = "* Dots represent p<= 0.05")+
+  facet_wrap(~lag_bins,ncol=5)+
+  theme_minimal()
+```
+
+## Step #7
+
+Build a time series based on the available tree-ring records.
+
+```{r}
+#| echo: false
+
+### Import data
+
+dendro_counts<- read.csv("<INSERTYOURDIRECTORY>/dendrochronological_reconstruction.csv",header=T,fileEncoding = 'UTF-8-BOM')
+
+ggplot()+
+  geom_line(data=dendro_counts,aes(Year,Count,group=1,color=as.factor(interpolated)),linewidth=2)+
+  scale_color_manual(values=c("#cfe1b9","#EE8959"))+
+  labs(title="Number of Tree Ring cutting Dates by year",
+       x="Year",
+       y="Number of Cutting Dates",
+       subtitle="orange line represents interpolated values",
+  )+
+  theme_minimal()+
+  theme(legend.position = "none")
+```
+
+## Step #7.1
+
+Run causality tests between the tree-ring record and the climate conditions at that time. Results show strong relationship between last years dendrochronological activity and this years variability (measured year-to-year, i.e. dendro_total\$v1).
+
+```{r}
+#| echo: false
+
+
+dendro_total<- read.csv("<INSERTYOURDIRECTORY>/dendrochronological_granger_causality.csv",header=T,fileEncoding = 'UTF-8-BOM')
+
+
+
+grangertest(Count ~ p1, order = 1, data = dendro_total)
+grangertest(Count ~ v1, order = 1, data = dendro_total)
+grangertest(Count ~ v5, order = 1, data = dendro_total)
+grangertest(Count ~ v10, order = 1, data = dendro_total)
+grangertest(Count ~ v15, order = 1, data = dendro_total)
+grangertest(Count ~ v25, order = 1, data = dendro_total)
+
+
+aridity<- read.csv("<INSERTYOURDIRECTORY>/granger_causality_aridity.csv",header=T,fileEncoding = 'UTF-8-BOM')
+
+variability<- read.csv("<INSERTYOURDIRECTORY>/granger_causality_variability.csv",header=T,fileEncoding = 'UTF-8-BOM')
+
+
+variability$lag_year_title <- factor(variability$lag_year_title,levels=c("1 Year","5 Years","10 Years","15 Years","20 Years","25 Years"))
+
+
+ggplot()+
+  geom_line(data=variability,aes(year_lag,value,group=grouping,col=top_value))+
+  geom_line(data=aridity,aes(year_lag,p1),col="white",size=1.25)+
+  geom_line(data=aridity,aes(year_lag,p1),col="#EE8959",size=1.05,linetype="twodash")+
+  scale_color_gradient(name="Percentile",low="#cfe1b9",high="#1b4332")+
+  facet_wrap(~lag_year_title,nrow=5)+
+  labs(title="Variability measured by changes in each year and n year(s) previous",
+       x="Year Lag in Causality",
+       y="Granger Causality Score",
+       subtitle="Dashed orange line represents causality between extreme aridity and tree cutting activity",
+  )+
+  force_panelsizes(rows=c(2,1,1,1,1))+
+  theme_minimal()
+```
